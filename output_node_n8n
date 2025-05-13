@@ -1,0 +1,242 @@
+[
+  {
+    "dashboard_kpi_finance": {
+      "content": {
+        "total_revenue": 0,
+        "total_profit": 0,
+        "profit_margin_pct": 0,
+        "avg_roi": 0,
+        "total_budget": 0,
+        "total_actual": 0,
+        "budget_utilization": 0,
+        "budget_variance": 0,
+        "total_variable": 0,
+        "total_fixed": 0,
+        "cost_per_outcome": 0,
+        "mean_revenue_unit": 0,
+        "mean_cost_unit": 0,
+        "past_spendings": 0,
+        "profit_by_region": {
+          "": 0
+        },
+        "profit_by_department": {
+          "": 0
+        },
+        "profit_by_project": {
+          "": 0
+        }
+      },
+      "reason": {
+        "summary": "KPI Finance memantau kesehatan keuangan dan profitabilitas bisnis. Angka-angka utama: revenue, profit, efisiensi biaya, utilisasi anggaran, dan cost per outcome.",
+        "insight": [
+          "Bisnis merugi.",
+          "Pengeluaran dalam batas anggaran.",
+          "Belum ada outcome."
+        ]
+      },
+      "metadata": {
+        "fiscal_years": [
+          ""
+        ],
+        "regions": [
+          ""
+        ],
+        "departments": [
+          ""
+        ],
+        "projects": [
+          ""
+        ],
+        "n_transactions": 50
+      },
+      "embedding": "total_revenue:0 | total_profit:0 | profit_margin_pct:0 | avg_roi:0 | total_budget:0 | total_actual:0 | budget_utilization:0 | budget_variance:0 | total_variable:0 | total_fixed:0 | cost_per_outcome:0 | mean_revenue_unit:0 | mean_cost_unit:0 | past_spendings:0 | profit_by_region_:0 | profit_by_department_:0 | profit_by_project_:0"
+    },
+    "dashboard_kpi_hr": {
+      "content": {
+        "total_employees": 1,
+        "outcome_per_employee": 0,
+        "avg_roi_employee": 0,
+        "profit_per_employee": 0,
+        "budget_per_employee": 0,
+        "spending_per_employee": 0,
+        "employees_per_dept": {
+          "": 50
+        }
+      },
+      "reason": {
+        "summary": "KPI HR memantau efektivitas SDM dan kontribusinya terhadap outcome dan profit.",
+        "insight": [
+          "SDM aktif dan berkontribusi.",
+          "Produktivitas SDM rendah atau data kurang."
+        ]
+      },
+      "metadata": {
+        "total_employees": 1,
+        "employees": [
+          ""
+        ],
+        "departments": [
+          ""
+        ],
+        "projects": [
+          ""
+        ]
+      },
+      "embedding": "total_employees:1 | outcome_per_employee:0 | avg_roi_employee:0 | profit_per_employee:0 | budget_per_employee:0 | spending_per_employee:0 | employees_per_dept_:50"
+    },
+    "dashboard_kpi_sales_marketing": {
+      "content": {
+        "total_revenue": 0,
+        "revenue_by_store_type": {
+          "": 0
+        },
+        "revenue_by_region": {
+          "": 0
+        },
+        "revenue_by_department": {
+          "": 0
+        },
+        "mean_revenue_unit": 0,
+        "profit_margin_by_sales": {},
+        "budget_vs_actual_sales": {
+          "budget_sales": 0,
+          "actual_sales": 0
+        },
+        "roi_sales": 0,
+        "seasonal_revenue": {
+          "": 0
+        }
+      },
+      "reason": {
+        "summary": "KPI Sales/Marketing memantau efektivitas strategi penjualan dan pemasaran.",
+        "insight": [
+          "Revenue tertinggi: ",
+          "Musim puncak: "
+        ]
+      },
+      "metadata": {
+        "store_types": [
+          ""
+        ],
+        "seasons": [
+          ""
+        ],
+        "sales_projects": []
+      },
+      "embedding": "total_revenue:0 | revenue_by_store_type_:0 | revenue_by_region_:0 | revenue_by_department_:0 | mean_revenue_unit:0 | budget_vs_actual_sales_budget_sales:0 | budget_vs_actual_sales_actual_sales:0 | roi_sales:0 | seasonal_revenue_:0"
+    },
+    "dashboard_kpi_operation": {
+      "content": {
+        "total_outcomes": 0,
+        "operational_cost": 0,
+        "cost_per_outcome": 0,
+        "budget_util_operation": 0,
+        "op_profit_margin": 0,
+        "op_revenue": 0,
+        "past_spendings_op": 0
+      },
+      "reason": {
+        "summary": "KPI Operation mengevaluasi efisiensi outcome dan biaya operasional.",
+        "insight": [
+          "Data biaya operasi belum tersedia.",
+          "Belum ada outcome terukur."
+        ]
+      },
+      "metadata": {
+        "operational_projects": [],
+        "operation_departments": []
+      },
+      "embedding": "total_outcomes:0 | operational_cost:0 | cost_per_outcome:0 | budget_util_operation:0 | op_profit_margin:0 | op_revenue:0 | past_spendings_op:0"
+    },
+    "dashboard_kpi_project_management": {
+      "content": {
+        "n_projects": 1,
+        "budget_per_project": {
+          "": 0
+        },
+        "actual_per_project": {
+          "": 0
+        },
+        "outcome_per_project": {
+          "": 0
+        },
+        "revenue_per_project": {
+          "": 0
+        },
+        "profit_per_project": {
+          "": 0
+        },
+        "roi_per_project": {
+          "": 0
+        },
+        "budget_var_per_project": {
+          "": 0
+        },
+        "cost_per_outcome_per_project": {
+          "": 0
+        }
+      },
+      "reason": {
+        "summary": "KPI Project Management memantau budget, outcome, efisiensi, dan profit tiap proyek.",
+        "insight": [
+          "1 proyek aktif.",
+          "Rata-rata ROI proyek: 0.00"
+        ]
+      },
+      "metadata": {
+        "projects": [
+          ""
+        ],
+        "departments": [
+          ""
+        ]
+      },
+      "embedding": "n_projects:1 | budget_per_project_:0 | actual_per_project_:0 | outcome_per_project_:0 | revenue_per_project_:0 | profit_per_project_:0 | roi_per_project_:0 | budget_var_per_project_:0 | cost_per_outcome_per_project_:0"
+    },
+    "dashboard_kpi_strategic": {
+      "content": {
+        "total_revenue": 0,
+        "total_profit": 0,
+        "total_roi": 0,
+        "total_budget": 0,
+        "total_actual": 0,
+        "budget_utilization": 0,
+        "cost_structure": {
+          "variable": 0,
+          "fixed": 0,
+          "ratio": 0
+        },
+        "net_outcome_per_budget": 0,
+        "revenue_by_dept": {
+          "": 0
+        },
+        "profit_by_region": {
+          "": 0
+        },
+        "best_region": "",
+        "best_dept": ""
+      },
+      "reason": {
+        "summary": "KPI Strategic untuk pengambilan keputusan makro/top management.",
+        "insight": [
+          "Region dengan profit tertinggi: ",
+          "Department revenue tertinggi: ",
+          "Efisiensi outcome per budget: 0.00"
+        ]
+      },
+      "metadata": {
+        "fiscal_years": [
+          ""
+        ],
+        "departments": [
+          ""
+        ],
+        "regions": [
+          ""
+        ],
+        "n_transactions": 50
+      },
+      "embedding": "total_revenue:0 | total_profit:0 | total_roi:0 | total_budget:0 | total_actual:0 | budget_utilization:0 | cost_structure_variable:0 | cost_structure_fixed:0 | cost_structure_ratio:0 | net_outcome_per_budget:0 | revenue_by_dept_:0 | profit_by_region_:0 | best_region: | best_dept:"
+    }
+  }
+]
