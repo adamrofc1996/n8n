@@ -1,0 +1,1901 @@
+1. utils.py:
+
+import os
+import json
+import hashlib
+import math
+import datetime
+from typing import Any, Dict, Optional, List
+import pandas as pd
+import numpy as np
+
+# Define base and data directories (adjust as needed)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+META_FILE = os.path.join(DATA_DIR, "other_gdrive_meta.json")
+PROGRESS_FILE = os.path.join(DATA_DIR, "file_progress.json")
+EXCLUDED_FILES = {"other_gdrive_meta.json", "file_progress.json"}
+LOG_DIR = os.path.join(BASE_DIR, "data_eda")
+
+os.makedirs(LOG_DIR, exist_ok=True)
+
+def log_event(event: dict, log_name: str = "utils_log.json"):
+    log_path = os.path.join(LOG_DIR, log_name)
+    event['timestamp'] = datetime.datetime.utcnow().isoformat()
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                logs = json.load(f)
+            if not isinstance(logs, list):
+                logs = []
+        except Exception:
+            logs = []
+    else:
+        logs = []
+    logs.append(event)
+    with open(log_path, "w", encoding="utf-8") as f:
+        json.dump(logs, f, indent=2, ensure_ascii=False)
+
+def log_metadata_reference(event: dict, log_name: str = "metadata_reference_log.json"):
+    log_path = os.path.join(LOG_DIR, log_name)
+    event['timestamp'] = datetime.datetime.utcnow().isoformat()
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                logs = json.load(f)
+            if not isinstance(logs, list):
+                logs = []
+        except Exception:
+            logs = []
+    else:
+        logs = []
+    logs.append(event)
+    with open(log_path, "w", encoding="utf-8") as f:
+        json.dump(logs, f, indent=2, ensure_ascii=False)
+
+def safe(val, default=None):
+    """Return default if val is NaN, inf, None, empty, or null-like."""
+    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+        return default
+    if pd.isnull(val):
+        return default
+    return val if val not in [None, "", [], {}, "null", "None"] else default
+
+def load_json(path: str, default=None) -> Any:
+    """Load JSON from file, return default on error."""
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log_event({"error": f"load_json error {e}", "file": path})
+        return default
+
+def save_json(path: str, obj: Any):
+    """Save object as JSON to file."""
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        log_event({"error": f"save_json error {e}", "file": path})
+
+def calc_sha256_from_file(path: str) -> str:
+    """Calculate SHA256 hash of a file."""
+    try:
+        hash_sha256 = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                hash_sha256.update(chunk)
+        return hash_sha256.hexdigest()
+    except Exception as e:
+        log_event({"error": f"calc_sha256_from_file error {e}", "file": path})
+        return ""
+
+def clean_json(obj):
+    """Recursively clean object for JSON serialization."""
+    if isinstance(obj, dict):
+        return {str(k): clean_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [clean_json(v) for v in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    elif isinstance(obj, (datetime.datetime, datetime.date)):
+        return str(obj)
+    else:
+        return obj
+
+def parse_iso_to_local(dt_str: str) -> str:
+    """Convert ISO string to local time ISO string."""
+    if not dt_str or not isinstance(dt_str, str):
+        return ""
+    dt_str = dt_str.replace("+00:00Z", "Z").replace("Z+00:00", "Z")
+    try:
+        if dt_str.endswith("Z"):
+            dt_str = dt_str[:-1] + "+00:00"
+        dt_utc = pd.to_datetime(dt_str, utc=True)
+        dt_local = dt_utc.tz_convert(None).to_pydatetime().astimezone()
+        return dt_local.replace(microsecond=0).isoformat()
+    except Exception as e:
+        log_event({"error": f"parse_iso_to_local error {e}", "value": dt_str})
+        return ""
+
+def parse_iso_to_utc(dt_str: str):
+    """Convert ISO string to pandas UTC datetime."""
+    if not dt_str or not isinstance(dt_str, str):
+        return None
+    dt_str = dt_str.replace("+00:00Z", "Z").replace("Z+00:00", "Z")
+    try:
+        if dt_str.endswith("Z"):
+            dt_str = dt_str[:-1] + "+00:00"
+        return pd.to_datetime(dt_str, utc=True)
+    except Exception as e:
+        log_event({"error": f"parse_iso_to_utc error {e}", "value": dt_str})
+        return None
+
+def get_all_parquet_files(data_dir=DATA_DIR) -> List[Dict]:
+    """List all parquet files in data directory except excluded files."""
+    files = []
+    if not os.path.isdir(data_dir):
+        return files
+    for fname in os.listdir(data_dir):
+        if fname in EXCLUDED_FILES or fname.startswith(".") or not fname.lower().endswith(".parquet"):
+            continue
+        fpath = os.path.join(data_dir, fname)
+        if os.path.isfile(fpath):
+            files.append({
+                "name": fname,
+                "path": fpath,
+                "size": os.path.getsize(fpath),
+                "modified": datetime.datetime.fromtimestamp(os.path.getmtime(fpath)).isoformat()
+            })
+    return files
+
+def get_file_metadata():
+    """Load and combine file metadata from meta and progress JSON files."""
+    meta = load_json(META_FILE, default={})
+    progress = load_json(PROGRESS_FILE, default={})
+    meta_map = {}
+    if isinstance(meta, dict) and "files" in meta:
+        for f in meta["files"]:
+            meta_map[f.get("name")] = f
+    elif isinstance(meta, list):
+        for f in meta:
+            meta_map[f.get("name")] = f
+    progress_map = {}
+    if isinstance(progress, dict) and "progress" in progress:
+        for f in progress["progress"]:
+            progress_map[f.get("name")] = f
+    elif isinstance(progress, list):
+        for f in progress:
+            progress_map[f.get("name")] = f
+    return meta_map, progress_map
+
+def enrich_files_with_metadata(files: List[Dict]):
+    """Add meta and progress info to file dicts."""
+    meta_map, progress_map = get_file_metadata()
+    for f in files:
+        fname = f["name"]
+        f["meta"] = meta_map.get(fname, {})
+        f["progress"] = progress_map.get(fname, {})
+    return files
+
+def get_df_metadata(df: pd.DataFrame) -> Dict[str, Any]:
+    """Get dataframe metadata: dtype, min, max, null, unique, sample."""
+    meta = {}
+    for col in df.columns:
+        ser = df[col]
+        meta[col] = {
+            "type": str(ser.dtype),
+            "min": float(ser.min()) if pd.api.types.is_numeric_dtype(ser) else None,
+            "max": float(ser.max()) if pd.api.types.is_numeric_dtype(ser) else None,
+            "null_count": int(ser.isnull().sum()),
+            "nunique": int(ser.nunique()),
+            "sample": ser.dropna().unique()[:5].tolist(),
+        }
+    return meta
+
+# --- Unit Tests (Run python utils.py for basic check) ---
+def test_safe():
+    assert safe(None, 0) == 0
+    assert safe(float('nan'), 1) == 1
+    assert safe("", 9) == 9
+    assert safe(7, 9) == 7
+
+def test_load_json_and_save_json(tmp_path):
+    test_path = tmp_path / "test.json"
+    save_json(str(test_path), {"a": 1})
+    d = load_json(str(test_path))
+    assert d == {"a": 1}
+
+def test_get_df_metadata():
+    df = pd.DataFrame({
+        "num": [1, 2, 3, 4, 5, np.nan],
+        "cat": ["a", "b", "b", "c", "c", "c"]
+    })
+    meta = get_df_metadata(df)
+    assert "num" in meta and "cat" in meta
+    assert meta["num"]["type"] == "float64"
+    assert meta["cat"]["type"] == "object"
+
+if __name__ == "__main__":
+    test_safe()
+    import tempfile
+    p = tempfile.TemporaryDirectory()
+    test_load_json_and_save_json(Path(p.name))
+    test_get_df_metadata()
+    print("utils.py tests OK")
+
+2. sampling.py:
+
+import pandas as pd
+import numpy as np
+from typing import Optional, Tuple, Dict, Any, List
+import os
+import datetime
+import json
+
+# Centralized log directory for all EDA logs
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_eda")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+def log_sampling_event(event: dict, log_name: str = "sampling_log.json"):
+    log_path = os.path.join(LOG_DIR, log_name)
+    event['timestamp'] = datetime.datetime.utcnow().isoformat()
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                logs = json.load(f)
+            if not isinstance(logs, list):
+                logs = []
+        except Exception:
+            logs = []
+    else:
+        logs = []
+    logs.append(event)
+    with open(log_path, "w", encoding="utf-8") as f:
+        json.dump(logs, f, indent=2, ensure_ascii=False)
+
+def log_sampling_metadata(event: dict, log_name: str = "sampling_metadata_log.json"):
+    log_path = os.path.join(LOG_DIR, log_name)
+    event['timestamp'] = datetime.datetime.utcnow().isoformat()
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                logs = json.load(f)
+            if not isinstance(logs, list):
+                logs = []
+        except Exception:
+            logs = []
+    else:
+        logs = []
+    logs.append(event)
+    with open(log_path, "w", encoding="utf-8") as f:
+        json.dump(logs, f, indent=2, ensure_ascii=False)
+
+def auto_detect_stratify_col(
+    df: pd.DataFrame,
+    min_unique: int = 2,
+    max_unique: int = 30,
+    imbalance_thresh: float = 0.7
+) -> Optional[str]:
+    # Scan all categorical columns and pick the most imbalanced one
+    cat_cols = df.select_dtypes(include=['object', 'category']).columns
+    best_col = None
+    best_imbalance = 0
+    for col in cat_cols:
+        vc = df[col].value_counts(normalize=True)
+        if len(vc) < min_unique or len(vc) > max_unique:
+            continue
+        imbalance = float(vc.iloc[0]) if len(vc) > 0 else 0.0
+        if imbalance > imbalance_thresh or vc.min() < 0.02:
+            if imbalance > best_imbalance:
+                best_imbalance = imbalance
+                best_col = col
+    return best_col
+
+def auto_detect_weight_col(df: pd.DataFrame) -> Optional[str]:
+    weight_keywords = ['weight', 'score', 'prob', 'confidence']
+    for col in df.columns:
+        if any(w in col.lower() for w in weight_keywords) and pd.api.types.is_numeric_dtype(df[col]):
+            return col
+    return None
+
+def analyze_distribution(df: pd.DataFrame, stratify_col: Optional[str]) -> Dict[str, Any]:
+    if not stratify_col or stratify_col not in df.columns:
+        return {"type": "random", "reason": "No suitable stratify column found."}
+    vc = df[stratify_col].value_counts(normalize=True)
+    dominant = float(vc.iloc[0]) if len(vc) > 0 else 0.0
+    rare_count = int((vc < 0.05).sum())
+    info = {
+        "type": "stratified",
+        "stratify_col": stratify_col,
+        "dominant_category_ratio": dominant,
+        "rare_category_count": rare_count,
+        "unique_categories": int(len(vc)),
+        "reason": f"Column '{stratify_col}' is imbalanced (dominant={dominant:.2f}, rare={rare_count})"
+    }
+    return info
+
+def _sample_representative(
+    sample: pd.DataFrame, df: pd.DataFrame, cols: List[str], 
+    tolerance: float = 0.1, check_variance: bool = True, check_percentile: bool = True
+) -> bool:
+    # Check if sample descriptive stats are close to population
+    for col in cols:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            pop = df[col].dropna()
+            smp = sample[col].dropna()
+            if len(pop) == 0 or len(smp) == 0:
+                continue
+            pop_mean = pop.mean()
+            sample_mean = smp.mean()
+            if pop_mean != 0:
+                rel_diff = abs(pop_mean - sample_mean) / abs(pop_mean)
+                if rel_diff > tolerance:
+                    return False
+            if check_variance:
+                pop_var = pop.var()
+                sample_var = smp.var()
+                if pop_var != 0:
+                    rel_diff_var = abs(pop_var - sample_var) / abs(pop_var)
+                    if rel_diff_var > tolerance:
+                        return False
+            if check_percentile:
+                # Q1/Q3
+                for q in [0.25, 0.75]:
+                    pop_q = pop.quantile(q)
+                    smp_q = smp.quantile(q)
+                    if pop_q != 0:
+                        rel_diff_q = abs(pop_q - smp_q) / abs(pop_q)
+                        if rel_diff_q > tolerance:
+                            return False
+        elif pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_categorical_dtype(df[col]):
+            pop_dist = df[col].value_counts(normalize=True)
+            sample_dist = sample[col].value_counts(normalize=True)
+            common_cats = set(pop_dist.index) & set(sample_dist.index)
+            for cat in common_cats:
+                if abs(pop_dist[cat] - sample_dist[cat]) > tolerance:
+                    return False
+    return True
+
+def smart_agentic_sample(
+    df: pd.DataFrame,
+    n_sample: Optional[int] = 100,
+    frac: Optional[float] = None,
+    random_state: int = 42,
+    max_retries: int = 5,
+    tolerance: float = 0.1,
+    min_unique: int = 2,
+    max_unique: int = 30,
+    imbalance_thresh: float = 0.7,
+    n_clusters: Optional[int] = None,
+    impute_strategy: str = "mean"
+) -> Tuple[pd.DataFrame, dict]:
+    """
+    Smart sampling: stratified, cluster, weighted, with evaluation of sample representativity.
+
+    Parameters exposed: tolerance, min_unique, max_unique, imbalance_thresh, n_clusters, impute_strategy.
+    """
+    reasoning = {}
+    log_this = {}
+    try:
+        if n_sample is not None and frac is not None:
+            raise ValueError("Isi hanya salah satu: n_sample atau frac.")
+        if frac is not None:
+            n_sample = max(1, int(frac * len(df)))
+        if n_sample is None:
+            n_sample = min(100, len(df))  # fallback default
+
+        # Small data: take all
+        if len(df) <= n_sample:
+            reasoning['type'] = 'all'
+            reasoning['reason'] = f"Data kecil: {len(df)} <= n_sample={n_sample}, ambil semua."
+            log_this.update(reasoning)
+            log_sampling_event(log_this)
+            log_sampling_metadata(log_this)
+            return df.copy(), reasoning
+
+        # 1. Weighted sampling
+        weight_col = auto_detect_weight_col(df)
+        if weight_col:
+            reasoning['type'] = 'weighted'
+            reasoning['weight_col'] = weight_col
+            reasoning['reason'] = f"Sampling weighted by '{weight_col}'."
+            weights = df[weight_col].astype(float)
+            weights = (weights - weights.min()) + 1e-9
+            weights = weights / weights.sum()
+            sample_df = df.sample(n=n_sample, weights=weights, random_state=random_state)
+            if _sample_representative(sample_df, df, [weight_col], tolerance=tolerance):
+                log_this.update(reasoning)
+                log_sampling_event(log_this)
+                log_sampling_metadata(log_this)
+                return sample_df.reset_index(drop=True), reasoning
+
+        # 2. Stratified (on categorical column)
+        stratify_col = auto_detect_stratify_col(df, min_unique=min_unique, max_unique=max_unique, imbalance_thresh=imbalance_thresh)
+        dist_info = analyze_distribution(df, stratify_col)
+        reasoning.update(dist_info)
+        if stratify_col:
+            for attempt in range(max_retries):
+                min_per_cat = max(1, int(0.01 * n_sample))
+                strat_sample = (
+                    df.groupby(stratify_col, group_keys=False)
+                    .apply(lambda x: x.sample(n=min(len(x), max(min_per_cat, int(n_sample * len(x) / len(df)))), random_state=random_state+attempt))
+                )
+                strat_sample = strat_sample.reset_index(drop=True)
+                if len(strat_sample) > n_sample:
+                    strat_sample = strat_sample.sample(n=n_sample, random_state=random_state+attempt).reset_index(drop=True)
+                if _sample_representative(strat_sample, df, [stratify_col], tolerance=tolerance):
+                    reasoning['final_sample_size'] = len(strat_sample)
+                    reasoning['stratify_sample_attempt'] = attempt+1
+                    log_this.update(reasoning)
+                    log_sampling_event(log_this)
+                    log_sampling_metadata(log_this)
+                    return strat_sample, reasoning
+
+        # 3. Cluster Sampling for numeric cols
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) >= 3 and len(df) > 200:
+            try:
+                from sklearn.cluster import KMeans
+                # Impute missing for clustering
+                X = df[numeric_cols]
+                if impute_strategy == "mean":
+                    X = X.fillna(X.mean())
+                elif impute_strategy == "median":
+                    X = X.fillna(X.median())
+                else:
+                    X = X.fillna(X.mean())
+                nclust = n_clusters if n_clusters is not None else min(10, n_sample, len(df) // max(1, n_sample // 5))
+                for attempt in range(max_retries):
+                    km = KMeans(n_clusters=nclust, random_state=random_state+attempt)
+                    clusters = km.fit_predict(X)
+                    df2 = df.copy()
+                    df2['_cluster'] = clusters
+                    cluster_sample = (
+                        df2.groupby('_cluster', group_keys=False)
+                        .apply(lambda x: x.sample(n=min(len(x), max(1, n_sample // nclust)), random_state=random_state+attempt))
+                    )
+                    cluster_sample = cluster_sample.reset_index(drop=True)
+                    if len(cluster_sample) > n_sample:
+                        cluster_sample = cluster_sample.sample(n=n_sample, random_state=random_state+attempt).reset_index(drop=True)
+                    if _sample_representative(cluster_sample, df, list(numeric_cols), tolerance=tolerance):
+                        reasoning['type'] = 'cluster'
+                        reasoning['n_clusters'] = nclust
+                        reasoning['final_sample_size'] = len(cluster_sample)
+                        reasoning['cluster_sample_attempt'] = attempt+1
+                        cluster_sample = cluster_sample.drop(columns=['_cluster'])
+                        log_this.update(reasoning)
+                        log_sampling_event(log_this)
+                        log_sampling_metadata(log_this)
+                        return cluster_sample, reasoning
+            except ImportError:
+                reasoning['sklearn_error'] = True
+
+        # 4. Random sampling with representativity check
+        check_cols = list(df.select_dtypes(include=[np.number, "object", "category"]).columns)
+        for attempt in range(max_retries):
+            sample_df = df.sample(n=n_sample, random_state=random_state+attempt).reset_index(drop=True)
+            if _sample_representative(sample_df, df, check_cols, tolerance=tolerance):
+                reasoning['type'] = 'random'
+                reasoning['random_sample_attempt'] = attempt+1
+                reasoning['reason'] = "Random sampling representatif."
+                log_this.update(reasoning)
+                log_sampling_event(log_this)
+                log_sampling_metadata(log_this)
+                return sample_df, reasoning
+
+        # 5. Fallback: random without representativity check
+        reasoning['type'] = 'random'
+        reasoning['reason'] = "Fallback to random sampling (tanpa evaluasi representasi)."
+        sample_df = df.sample(n=n_sample, random_state=random_state).reset_index(drop=True)
+        log_this.update(reasoning)
+        log_sampling_event(log_this)
+        log_sampling_metadata(log_this)
+        return sample_df, reasoning
+
+    except Exception as e:
+        reasoning['error'] = str(e)
+        log_this.update(reasoning)
+        log_sampling_event(log_this)
+        log_sampling_metadata(log_this)
+        return df.head(1), reasoning   # Fallback to head(1) on hard error
+
+def get_file_sample_df(
+    fpath: str,
+    n_sample: int = 100,
+    frac: float = None,
+    random_state: int = 42,
+    **kwargs
+) -> Tuple[pd.DataFrame, dict]:
+    df = pd.read_parquet(fpath, engine="pyarrow")
+    sample_df, reasoning = smart_agentic_sample(df, n_sample=n_sample, frac=frac, random_state=random_state, **kwargs)
+    reasoning['input_file'] = fpath
+    reasoning['input_rows'] = len(df)
+    reasoning['sample_rows'] = len(sample_df)
+    return sample_df, reasoning
+
+# --- Unit Test ---
+def test_smart_agentic_sample():
+    df = pd.DataFrame({
+        "cat": ["a", "a", "b", "b", "c"]*20,
+        "num": np.arange(100),
+        "weight_score": np.random.rand(100)
+    })
+    df = df.sample(frac=1).reset_index(drop=True)
+    sample, reasoning = smart_agentic_sample(df, n_sample=10, tolerance=0.15, min_unique=2, max_unique=10, imbalance_thresh=0.5)
+    assert isinstance(sample, pd.DataFrame)
+    assert isinstance(reasoning, dict)
+    assert 0 < len(sample) <= 10
+    print("Sample shape:", sample.shape)
+    print("Reasoning:", reasoning)
+
+if __name__ == "__main__":
+    test_smart_agentic_sample()
+    print("sampling.py tests OK")
+
+3. schemas.py:
+
+from pydantic import BaseModel
+from typing import List, Dict, Optional, Any, Union
+
+# --- Numeric Column Statistics ---
+class NumericColStat(BaseModel):
+    count: float
+    mean: float
+    std: float
+    min: float
+    q25: float
+    q50: float
+    q75: float
+    max: float
+    unique: int
+    outlier_count: int
+    hist_bins: List[float]
+    hist_counts: List[int]
+    skewness: float
+    kurtosis: float
+    zero_ratio: float
+    neg_ratio: float
+    pos_ratio: float
+
+# --- Categorical Column Statistics ---
+class CategoricalColStat(BaseModel):
+    unique: int
+    top_freq: Dict[str, int]
+    entropy: float
+    rare_count: int
+    rare_pct: float
+
+# --- Schema/Expectations Auto-Suggestion ---
+class ColumnSchemaExpectation(BaseModel):
+    type: str
+    min: Optional[Union[float, str]] = None
+    max: Optional[Union[float, str]] = None
+    n_unique: Optional[int] = None
+    max_length: Optional[int] = None
+    sample_values: Optional[List[Any]] = None
+
+class AutoSchemaExpectation(BaseModel):
+    columns: Dict[str, ColumnSchemaExpectation]
+
+# --- Data Reference Example ---
+class DataReference(BaseModel):
+    min: Optional[float]
+    max: Optional[float]
+    sample: Optional[List[Any]]
+    hist_bins: Optional[List[float]]
+    hist_counts: Optional[List[int]]
+    value_sample: Optional[List[Any]]
+
+# --- Main EDA Result Schema ---
+class EDAResult(BaseModel):
+    file: str
+    total_rows: int
+    columns: List[str]
+    columns_count: int
+    duplicate_rows: int
+    duplicate_pct: float
+    missing_per_col: Dict[str, int]
+    missing_pct_per_col: Dict[str, float]
+    numeric: Dict[str, NumericColStat]
+    categorical: Dict[str, CategoricalColStat]
+    completeness_score: float
+    confidence_score: float
+    auto_schema_expectation: Optional[Dict[str, Any]] = None
+    data_reference: Optional[Dict[str, Any]] = None
+    sampling: Dict[str, Any]
+    generated_at: str
+    meta: Optional[Dict[str, Any]] = None
+    progress: Optional[Dict[str, Any]] = None
+
+    # --- Optional: For advanced/LLM/GE/anomaly results (uncomment if needed) ---
+    # profiling: Optional[Any] = None
+    # ge: Optional[Any] = None
+    # gemini_review: Optional[Any] = None
+    # anomaly: Optional[Any] = None
+
+4. eda.py:
+
+import numpy as np
+import pandas as pd
+import datetime
+from typing import Dict, Any, List, Optional
+from utils import safe
+import os
+import json
+
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_eda")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# --- Load config.json (global) ---
+CONFIG_PATH = os.path.join(LOG_DIR, "config.json")
+if os.path.exists(CONFIG_PATH):
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        CONFIG = json.load(f)
+else:
+    CONFIG = {}
+
+# Helper to get config value with fallback
+def get_conf(*keys, default=None):
+    d = CONFIG
+    for k in keys:
+        if k in d:
+            d = d[k]
+        else:
+            return default
+    return d
+
+# --- Advanced Logging and Reasoning ---
+def log_eda_event(event: dict, log_name: str = "eda_log.json"):
+    log_path = os.path.join(LOG_DIR, log_name)
+    event['timestamp'] = datetime.datetime.utcnow().isoformat()
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                logs = json.load(f)
+            if not isinstance(logs, list):
+                logs = []
+        except Exception:
+            logs = []
+    else:
+        logs = []
+    logs.append(event)
+    with open(log_path, "w", encoding="utf-8") as f:
+        json.dump(logs, f, indent=2, ensure_ascii=False)
+
+def log_advanced_eda_event(event: dict, log_name: str = "eda_advanced_log.json"):
+    log_path = os.path.join(LOG_DIR, log_name)
+    event['timestamp'] = datetime.datetime.utcnow().isoformat()
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                logs = json.load(f)
+            if not isinstance(logs, list):
+                logs = []
+        except Exception:
+            logs = []
+    else:
+        logs = []
+    logs.append(event)
+    with open(log_path, "w", encoding="utf-8") as f:
+        json.dump(logs, f, indent=2, ensure_ascii=False)
+
+# --- Reasoning, Metadata, Schema Suggestion ---
+def suggest_schema_expectation(df: pd.DataFrame) -> Dict[str, Any]:
+    """Auto-suggest schema/expectation for each column."""
+    result = {}
+    for col in df.columns:
+        dtype = str(df[col].dtype)
+        suggestion = {"type": dtype}
+        if pd.api.types.is_numeric_dtype(df[col]):
+            suggestion['min'] = float(safe(df[col].min(), 0))
+            suggestion['max'] = float(safe(df[col].max(), 0))
+            suggestion['n_unique'] = int(df[col].nunique())
+        if pd.api.types.is_string_dtype(df[col]):
+            nonnull = df[col].dropna().astype(str)
+            suggestion['max_length'] = int(nonnull.str.len().max()) if not nonnull.empty else 0
+            suggestion['n_unique'] = int(df[col].nunique())
+            sample_values = nonnull.unique()[:5].tolist() if not nonnull.empty else []
+            suggestion['sample_values'] = sample_values
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            suggestion['min'] = str(safe(df[col].min()))
+            suggestion['max'] = str(safe(df[col].max()))
+        result[col] = suggestion
+    return result
+
+def explain_expectation_applied(col, col_type, rule, params, evidence=None):
+    """Generate reasoning string for why a rule is applied."""
+    reason = f"Expectation '{rule}' applied to column '{col}' (type: {col_type}) with params {params}."
+    if evidence:
+        reason += f" Evidence: {evidence}"
+    return reason
+
+def capture_data_reference(df, cols=None, n=10):
+    """Capture value samples and histograms for reference."""
+    bins = get_conf('eda', 'hist_bins', default=10)
+    ref = {}
+    if cols is None:
+        cols = df.columns
+    for col in cols:
+        ser = df[col]
+        if ser.dtype.kind in "biufc":  # numeric
+            try:
+                hist = np.histogram(ser.dropna(), bins=bins)
+                ref[col] = {
+                    "min": float(ser.min()),
+                    "max": float(ser.max()),
+                    "sample": ser.dropna().sample(n=min(n, len(ser.dropna()))).tolist(),
+                    "hist_bins": hist[1].tolist() if len(hist[1]) else [],
+                    "hist_counts": hist[0].tolist() if len(hist[0]) else [],
+                }
+            except Exception:
+                ref[col] = {}
+        else:
+            ref[col] = {
+                "value_sample": ser.dropna().unique()[:n].tolist()
+            }
+    return ref
+
+# --- Numeric Analysis ---
+class NumericAnalyzer:
+    @staticmethod
+    def analyze(df: pd.DataFrame) -> Dict[str, Any]:
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        bins = get_conf('eda', 'hist_bins', default=10)
+        result = {}
+        for col in numeric_cols:
+            s = df[col].dropna()
+            desc = s.describe(percentiles=[.25, .5, .75]).to_dict()
+            q25 = desc.get('25%')
+            q75 = desc.get('75%')
+            iqr = q75 - q25 if (q75 is not None and q25 is not None) else None
+            hist = np.histogram(s, bins=bins) if len(s) else ([], [])
+            outlier_count = int(((s < (q25 - 1.5 * iqr)) | (s > (q75 + 1.5 * iqr))).sum()) if iqr else 0
+            skew = float(s.skew()) if len(s) > 2 else 0
+            kurt = float(s.kurt()) if len(s) > 2 else 0
+            zeros = int((s == 0).sum())
+            neg = int((s < 0).sum())
+            pos = int((s > 0).sum())
+            result[col] = {
+                "count": float(safe(desc.get("count"), 0)),
+                "mean": float(safe(desc.get("mean"), 0)),
+                "std": float(safe(desc.get("std"), 0)),
+                "min": float(safe(desc.get("min"), 0)),
+                "q25": float(safe(desc.get("25%"), 0)),
+                "q50": float(safe(desc.get("50%"), 0)),
+                "q75": float(safe(desc.get("75%"), 0)),
+                "max": float(safe(desc.get("max"), 0)),
+                "unique": int(s.nunique()),
+                "outlier_count": outlier_count,
+                "hist_bins": hist[1].tolist() if len(hist[1]) else [],
+                "hist_counts": hist[0].tolist() if len(hist[0]) else [],
+                "skewness": skew,
+                "kurtosis": kurt,
+                "zero_ratio": zeros / len(s) if len(s) else 0,
+                "neg_ratio": neg / len(s) if len(s) else 0,
+                "pos_ratio": pos / len(s) if len(s) else 0
+            }
+        return result
+
+# --- Categorical Analysis ---
+class CategoricalAnalyzer:
+    @staticmethod
+    def analyze(df: pd.DataFrame, max_freq: int = None) -> Dict[str, Any]:
+        cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+        if max_freq is None:
+            max_freq = get_conf('eda', 'max_freq', default=5)
+        result = {}
+        for col in cat_cols:
+            s = df[col].astype(str).fillna('')
+            freq = s.value_counts().head(max_freq).to_dict()
+            value_counts = s.value_counts(normalize=True)
+            entropy = float(value_counts.map(lambda p: -p * np.log2(p) if p > 0 else 0).sum())
+            rare = [v for v, c in s.value_counts().items() if c == 1]
+            rare_count = len(rare)
+            rare_pct = rare_count / len(s) * 100 if len(s) else 0
+            result[col] = {
+                "unique": int(s.nunique()),
+                "top_freq": freq,
+                "entropy": entropy,
+                "rare_count": rare_count,
+                "rare_pct": rare_pct
+            }
+        return result
+
+# --- Quality Scoring ---
+class QualityScorer:
+    @staticmethod
+    def score(eda_results, n_rows):
+        non_missing = [1 - (eda_results["missing_per_col"].get(col, 0) / n_rows) for col in eda_results["columns"]]
+        completeness_score = round(sum(non_missing) / len(non_missing) * 100, 2) if non_missing else 0.0
+        dupe_penalty = max(0, 1 - (eda_results.get("duplicate_pct", 0)/100))
+        outlier_penalty = 1.0
+        outlier_fracs = []
+        for col, stat in eda_results.get("numeric", {}).items():
+            n = n_rows
+            outlier_count = stat.get("outlier_count", 0)
+            frac = outlier_count / n if n else 0
+            outlier_fracs.append(frac)
+        outlier_thresh = get_conf('eda', 'outlier_threshold', default=0.05)
+        if outlier_fracs:
+            avg_outlier_frac = np.mean([f for f in outlier_fracs if f > outlier_thresh]) if any(f > outlier_thresh for f in outlier_fracs) else 0
+            if avg_outlier_frac > 0:
+                outlier_penalty = 1 - min(avg_outlier_frac, 0.3)
+        score = completeness_score/100 * dupe_penalty * outlier_penalty
+        confidence_score = round(min(max(score, 0), 1) * 100, 2)
+        return completeness_score, confidence_score
+
+# --- Main EDA Function ---
+def advanced_eda(
+    df: pd.DataFrame,
+    file: str,
+    meta: Optional[dict] = None,
+    progress: Optional[dict] = None,
+    sampling_info: Optional[dict] = None
+) -> dict:
+    n = len(df)
+    # --- Reasoning & Data Reference ---
+    auto_schema = suggest_schema_expectation(df)
+    data_reference = capture_data_reference(df)
+    # --- Numeric, Cat, Quality ---
+    numeric_stats = NumericAnalyzer.analyze(df)
+    categorical_stats = CategoricalAnalyzer.analyze(df)
+    completeness_score, confidence_score = QualityScorer.score(
+        {
+            "missing_per_col": df.isnull().sum().to_dict(),
+            "columns": list(df.columns),
+            "duplicate_pct": round(df.duplicated().mean() * 100, 2),
+            "numeric": numeric_stats
+        },
+        n
+    )
+    result = {
+        "file": file,
+        "total_rows": n,
+        "columns": list(df.columns),
+        "columns_count": len(df.columns),
+        "duplicate_rows": int(df.duplicated().sum()),
+        "duplicate_pct": round(df.duplicated().mean() * 100, 2),
+        "missing_per_col": df.isnull().sum().to_dict(),
+        "missing_pct_per_col": (df.isnull().mean() * 100).round(2).to_dict(),
+        "numeric": numeric_stats,
+        "categorical": categorical_stats,
+        "completeness_score": completeness_score,
+        "confidence_score": confidence_score,
+        "auto_schema_expectation": auto_schema,
+        "data_reference": data_reference,
+        "sampling": sampling_info or {},
+        "meta": meta,
+        "progress": progress,
+        "generated_at": datetime.datetime.now().isoformat()
+    }
+
+    # --- ADVANCED ENRICHMENT ---
+    # 1. Data Drift Detection
+    try:
+        from data_eda.data_drift import compute_stats, load_baseline_stats, detect_drift, save_baseline_stats
+        current_stats = compute_stats(df)
+        baseline = load_baseline_stats()
+        drift_threshold = get_conf('eda', 'drift_threshold', default=0.15)
+        if baseline:
+            drift_alerts = detect_drift(current_stats, baseline, threshold=drift_threshold)
+        else:
+            save_baseline_stats(current_stats)
+            drift_alerts = []
+        result['drift_alerts'] = drift_alerts
+    except Exception as e:
+        result['drift_alerts'] = [f"Drift detection error: {e}"]
+
+    # 2. Feature Interaction & Correlation
+    try:
+        from data_eda.feature_interaction import analyze_feature_interaction
+        corr_threshold = get_conf('eda', 'corr_threshold', default=0.7)
+        vif_threshold = get_conf('eda', 'vif_threshold', default=5.0)
+        feature_interaction = analyze_feature_interaction(df)
+        # Filter by threshold if needed
+        feature_interaction['high_correlation'] = [
+            p for p in feature_interaction.get('high_correlation', [])
+            if p['corr'] > corr_threshold
+        ]
+        feature_interaction['high_vif'] = [
+            v for v in feature_interaction.get('high_vif', [])
+            if v['vif'] > vif_threshold
+        ]
+        result['feature_interaction'] = feature_interaction
+    except Exception as e:
+        result['feature_interaction'] = {"error": str(e)}
+
+    # 3. Time Series Profiling (detect datetime columns)
+    try:
+        from data_eda.timeseries_profile import analyze_timeseries
+        result['timeseries_profile'] = analyze_timeseries(df)
+    except Exception as e:
+        result['timeseries_profile'] = {"error": str(e)}
+
+    # 4. Plugin-based Extension
+    try:
+        from data_eda.plugin_registry import run_plugins
+        result['plugin_results'] = run_plugins(df)
+    except Exception as e:
+        result['plugin_results'] = {"error": str(e)}
+
+    # 5. (Optional) GE Suite Export (if needed)
+    try:
+        ge_suite_export = get_conf('eda', 'export_ge_suite', default=False)
+        if ge_suite_export:
+            from data_eda.ge_suite_tools import suggest_schema_to_ge_suite, save_ge_suite
+            suite = suggest_schema_to_ge_suite(auto_schema)
+            suite_path = os.path.join(LOG_DIR, "auto_suite.json")
+            save_ge_suite(suite, suite_path)
+            result['ge_suite_path'] = suite_path
+    except Exception as e:
+        result['ge_suite_path'] = f"GE Suite Export error: {e}"
+
+    # Logging feedback loop (basic + advanced)
+    log_eda_event({
+        "file": file,
+        "completeness_score": completeness_score,
+        "confidence_score": confidence_score,
+        "duplicate_pct": result["duplicate_pct"],
+        "anomaly": {
+            "outlier_frac": [
+                stat.get("outlier_count", 0) / n if n else 0
+                for stat in numeric_stats.values()
+            ] if numeric_stats else []
+        },
+        "scores": {
+            "completeness": completeness_score,
+            "confidence": confidence_score
+        },
+        "auto_schema": auto_schema
+    })
+    log_advanced_eda_event(result)
+    return result
+
+# --- Batch EDA on Folder ---
+def batch_eda_on_folder(
+    data_dir: str,
+    enrich_meta: bool = True,
+    n_sample: int = None,
+    frac: float = None,
+    stratify_col: str = None,
+    weight_col: str = None
+) -> List[dict]:
+    from utils import get_all_parquet_files, enrich_files_with_metadata
+    from sampling import get_file_sample_df
+
+    files = get_all_parquet_files(data_dir)
+    if enrich_meta:
+        files = enrich_files_with_metadata(files)
+    all_eda = []
+    for f in files:
+        try:
+            fname = f["name"]
+            meta = f.get("meta", {})
+            progress = f.get("progress", {})
+            sample_df, reasoning = get_file_sample_df(
+                f["path"],
+                n_sample=n_sample,
+                frac=frac
+            )
+            sampling_info = {
+                "sample_shape": sample_df.shape,
+                "reasoning": reasoning,
+                "stratify_col": stratify_col,
+                "weight_col": weight_col,
+                "frac": frac
+            }
+            eda = advanced_eda(
+                sample_df,
+                file=fname,
+                meta=meta,
+                progress=progress,
+                sampling_info=sampling_info
+            )
+            all_eda.append(eda)
+        except Exception as e:
+            log_eda_event({"error": str(e), "file": f.get("name")})
+    return all_eda
+
+# --- Unit Test ---
+def test_advanced_eda():
+    df = pd.DataFrame({
+        "cat": ["a", "a", "b", "b", "c"]*20,
+        "num": np.arange(100),
+        "dt": pd.date_range("2020-01-01", periods=100)
+    })
+    res = advanced_eda(df, "dummy.parquet")
+    assert isinstance(res, dict)
+    assert "completeness_score" in res
+    assert "confidence_score" in res
+    assert "auto_schema_expectation" in res
+    assert "data_reference" in res
+    print("advanced_eda() output:", res)
+
+if __name__ == "__main__":
+    test_advanced_eda()
+    print("eda.py tests OK")
+
+5. eda_prefect_flow.py:
+
+from prefect import flow, task
+import os
+import pandas as pd
+import json
+import time
+from datetime import datetime, date
+from eda_param_tuner import get_optimal_sampling_params
+from eda_anomaly import detect_anomaly
+import math
+
+from my_ge_agentic_utils import apply_dynamic_expectations
+from advanced_evaluator import generate_advanced_review
+
+# Output only 1 final JSON and 1 PDF per file, with consistent naming
+EDA_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_eda")
+os.makedirs(EDA_LOG_DIR, exist_ok=True)
+
+EDA_RESULT_DIR = os.path.join(EDA_LOG_DIR, "eda_result")
+os.makedirs(EDA_RESULT_DIR, exist_ok=True)
+
+# --- Load config.json (global) ---
+CONFIG_PATH = os.path.join(EDA_LOG_DIR, "config.json")
+if os.path.exists(CONFIG_PATH):
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        CONFIG = json.load(f)
+else:
+    CONFIG = {}
+
+def get_conf(*keys, default=None):
+    d = CONFIG
+    for k in keys:
+        if k in d:
+            d = d[k]
+        else:
+            return default
+    return d
+
+def json_serial(obj):
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, pd.Timestamp):
+        return obj.isoformat()
+    return str(obj)
+
+def clean_json(obj):
+    """Recursively replaces NaN/inf/-inf with None for JSON compliance."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        else:
+            return obj
+    elif isinstance(obj, dict):
+        return {k: clean_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [clean_json(v) for v in obj]
+    else:
+        return obj
+
+def eda_result_exists(filepath):
+    """Check if EDA result already exists for the data file (by JSON output)."""
+    basename = os.path.splitext(os.path.basename(filepath))[0]
+    json_file = os.path.join(EDA_RESULT_DIR, f"{basename}_eda_final.json")
+    pdf_file = os.path.join(EDA_RESULT_DIR, f"{basename}_eda_final.pdf")
+    return os.path.exists(json_file) and os.path.exists(pdf_file)
+
+@task
+def load_and_analyze_file(filepath, n_sample=None, frac=None, stratify_col=None, weight_col=None, gemini_api_key=None):
+    from sampling import get_file_sample_df
+    from eda import advanced_eda
+    from schemas import EDAResult
+    from pdf_report_generator import generate_pdf_report
+
+    warnings = []
+    sampled = df = None
+
+    # Output file base name
+    basename = os.path.splitext(os.path.basename(filepath))[0]
+    output_json_path = os.path.join(EDA_RESULT_DIR, f"{basename}_eda_final.json")
+    output_pdf_path = os.path.join(EDA_RESULT_DIR, f"{basename}_eda_final.pdf")
+
+    # --- 1. LOAD DATA & SAMPLING ---
+    try:
+        # --- Use config if parameters not given ---
+        sample_conf = CONFIG.get('sampling', {})
+        if n_sample is None:
+            n_sample = sample_conf.get('n_sample', 100)
+        if frac is None:
+            frac = sample_conf.get('frac', None)
+        if stratify_col is None:
+            stratify_col = sample_conf.get('stratify_col', None)
+        if weight_col is None:
+            weight_col = sample_conf.get('weight_col', None)
+
+        sample_df, sampling_info = get_file_sample_df(
+            filepath,
+            n_sample=n_sample,
+            frac=frac,
+            random_state=sample_conf.get('random_state', 42)
+        )
+        df = pd.read_parquet(filepath)
+        rows = len(df)
+        cols = list(df.columns)
+        dtypes = df.dtypes.astype(str).to_dict()
+        summary_stats = sample_df.describe(include='all').to_dict()
+        head = sample_df.head(5).to_dict(orient="records")
+    except Exception as e:
+        return {
+            "file": filepath,
+            "error": f"Load/Sampling error: {e}"
+        }
+
+    # --- 2. PROFILING: (skip saving HTML/JSON, only keep profile_dict in memory) ---
+    profile_dict = None
+    try:
+        from ydata_profiling import ProfileReport
+        profile = ProfileReport(sample_df, minimal=False, explorative=True)
+        if hasattr(profile, "to_dict"):
+            profile_dict = profile.to_dict()
+        elif hasattr(profile, "get_description"):
+            profile_dict = profile.get_description()
+        elif hasattr(profile, "to_json"):
+            profile_dict = json.loads(profile.to_json())
+    except Exception as e:
+        warnings.append(f"Profiling error: {e}")
+
+    # --- 3. GREAT EXPECTATIONS ---
+    ge_summary = None
+    validation_result = None
+    try:
+        import great_expectations as ge
+        from great_expectations.core.batch import RuntimeBatchRequest
+        context = ge.get_context()
+        batch_request = RuntimeBatchRequest(
+            datasource_name="my_pandas_datasource",
+            data_connector_name="default_runtime_data_connector_name",
+            data_asset_name="my_pandas_asset",
+            runtime_parameters={"batch_data": sample_df},
+            batch_identifiers={"default_identifier_name": "default_id"},
+        )
+        datasources = [ds["name"] for ds in context.list_datasources()]
+        if "my_pandas_datasource" not in datasources:
+            context.add_datasource(
+                "my_pandas_datasource",
+                class_name="Datasource",
+                execution_engine={"class_name": "PandasExecutionEngine"},
+                data_connectors={
+                    "default_runtime_data_connector_name": {
+                        "class_name": "RuntimeDataConnector",
+                        "batch_identifiers": ["default_identifier_name"],
+                    }
+                }
+            )
+        validator = context.get_validator(batch_request=batch_request)
+        validator = apply_dynamic_expectations(validator, sample_df)
+        validation_result = validator.validate()
+        if isinstance(validation_result, dict):
+            ge_summary = {
+                "success": validation_result.get("success"),
+                "statistics": validation_result.get("statistics"),
+                "expectations_failed": validation_result.get("unsuccessful_expectations"),
+            }
+        else:
+            ge_summary = {
+                "success": getattr(validation_result, "success", None),
+                "statistics": getattr(validation_result, "statistics", None),
+                "expectations_failed": getattr(validation_result, "unsuccessful_expectations", None),
+            }
+    except Exception as e:
+        warnings.append(f"Great Expectations error: {e}")
+
+    # --- 4. GEMINI ADVANCED REVIEW ---
+    gemini_result = None
+    try:
+        if profile_dict is not None and ge_summary is not None and gemini_api_key is not None:
+            gemini_result = generate_advanced_review(sample_df, profile_dict, ge_summary, gemini_api_key)
+    except Exception as e:
+        warnings.append(f"Gemini advanced review error: {e}")
+
+    # --- 5. ANOMALY DETECTION ---
+    try:
+        anomaly_alerts, anomaly_rate = detect_anomaly(sample_df)
+    except Exception as e:
+        anomaly_alerts = [f"Anomaly detection error: {e}"]
+        anomaly_rate = 1.0
+
+    # --- 6. MAIN ADVANCED EDA ---
+    try:
+        # --- Advanced enrichment: drift, feature interaction, timeseries, plugin, config ---
+        eda_dict = advanced_eda(
+            sample_df,
+            file=filepath,
+            meta=None,
+            progress=None,
+            sampling_info=sampling_info
+        )
+    except Exception as e:
+        return {
+            "file": filepath,
+            "error": f"Advanced EDA error: {e}"
+        }
+
+    # Optionally enrich eda_dict with GE, Gemini, Anomaly, etc.
+    eda_dict['gemini_review'] = gemini_result
+    eda_dict['ge'] = ge_summary
+    eda_dict['anomaly'] = {
+        "alerts": anomaly_alerts,
+        "rate": anomaly_rate
+    }
+    eda_dict['warnings'] = warnings
+
+    # --- 7. WRAP TO SCHEMA ---
+    try:
+        from schemas import EDAResult
+        eda_schema = EDAResult(**eda_dict)
+    except Exception as e:
+        return {
+            "file": filepath,
+            "error": f"Schema validation error: {e}",
+            "eda_dict": eda_dict
+        }
+
+    # --- 8. SAVE ONLY FINAL JSON AND PDF ---
+    try:
+        with open(output_json_path, "w", encoding="utf-8") as f:
+            f.write(eda_schema.json(indent=2, ensure_ascii=False, default=json_serial))
+    except Exception as e:
+        return {
+            "file": filepath,
+            "error": f"Save JSON error: {e}"
+        }
+
+    try:
+        generate_pdf_report(eda_schema.dict(), output_pdf_path)
+    except Exception as e:
+        warnings.append(f"Generate PDF error: {e}")
+
+    return {
+        "file": filepath,
+        "output_json": output_json_path,
+        "output_pdf": output_pdf_path,
+        "success": True,
+        "warnings": warnings,
+        "eda_result": eda_schema.dict()
+    }
+
+@flow
+def eda_analyze_all_files(
+    data_dir: str = None,
+    n_sample: int = None,
+    frac: float = None,
+    stratify_col: str = None,
+    weight_col: str = None,
+    gemini_api_key: str = None,
+):
+    if data_dir is None:
+        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    # --- Use config if parameters not given ---
+    sample_conf = CONFIG.get('sampling', {})
+    if n_sample is None:
+        n_sample = sample_conf.get('n_sample', 100)
+    if frac is None:
+        frac = sample_conf.get('frac', None)
+    if stratify_col is None:
+        stratify_col = sample_conf.get('stratify_col', None)
+    if weight_col is None:
+        weight_col = sample_conf.get('weight_col', None)
+
+    start_time = time.time()
+    results = []
+    errors = 0
+    anomaly_sum = 0.0
+    num_files = 0
+
+    os.makedirs(data_dir, exist_ok=True)
+    for fname in os.listdir(data_dir):
+        if fname.endswith(".parquet"):
+            fpath = os.path.join(data_dir, fname)
+            if eda_result_exists(fpath):
+                print(f"[SKIP] Hasil EDA sudah ada untuk file: {fname}")
+                continue
+            num_files += 1
+            res = load_and_analyze_file.submit(
+                fpath, n_sample=n_sample, frac=frac,
+                stratify_col=stratify_col, weight_col=weight_col,
+                gemini_api_key=gemini_api_key
+            )
+            results.append(res)
+    final_results = [r.result() for r in results]
+    for r in final_results:
+        if r.get("error"):
+            errors += 1
+        anomaly_sum += r.get("eda_result", {}).get("anomaly", {}).get("rate", 0)
+    runtime = time.time() - start_time
+    anomaly_rate = anomaly_sum / num_files if num_files else 0
+    summary = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "data_dir": data_dir,
+        "n_sample": n_sample,
+        "frac": frac,
+        "stratify_col": stratify_col,
+        "weight_col": weight_col,
+        "num_files": num_files,
+        "runtime": runtime,
+        "errors": errors,
+        "anomaly_rate": anomaly_rate,
+        "success_rate": (num_files - errors) / num_files if num_files else 0,
+        "details": final_results,
+    }
+    log_file = os.path.join(
+        EDA_LOG_DIR,
+        f"eda_log_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+    )
+    with open(log_file, "w", encoding="utf-8") as f:
+        json.dump(clean_json(summary), f, indent=2, ensure_ascii=False, default=json_serial)
+    return clean_json(summary)
+
+if __name__ == "__main__":
+    # Make sure to provide GEMINI_API_KEY if required
+    gemini_api_key = os.environ.get("GEMINI_API_KEY", None)
+    eda_analyze_all_files(gemini_api_key=gemini_api_key)
+
+6. advanced_evaluator.py:
+
+import google.generativeai as genai
+import json
+import os
+from dotenv import load_dotenv
+
+# Muat variabel lingkungan dari file .env
+load_dotenv()
+
+def configure_gemini(api_key):
+    """
+    Konfigurasi API key Gemini.
+    """
+    genai.configure(api_key=api_key)
+
+def generate_prompt(df, profiling_json, ge_summary):
+    """
+    Membuat prompt dinamis untuk LLM Gemini, dengan instruksi tegas agar output sepenuhnya dalam Bahasa Indonesia.
+    """
+    stats_summary = df.describe(include='all').to_dict()
+    columns = list(df.columns)
+    prompt = f"""
+Kamu adalah seorang data analyst AI profesional.
+
+Analisis data berikut berdasarkan hasil profiling, validasi kualitas data, dan ringkasan statistik:
+
+Profiling Data (YData Profiling JSON):
+{profiling_json}
+
+Quality Checks (Great Expectations Summary):
+{ge_summary}
+
+Statistik DataFrame (describe, info, missing value, dsb):
+{json.dumps(stats_summary)}
+
+Kolom: {columns}
+
+Instruksi:
+- Identifikasi dan jelaskan permasalahan kualitas data, anomali, atau kolom dengan kardinalitas tinggi.
+- Ringkas temuan statistik utama dari data.
+- Berikan insight bisnis/data (misal: tren, outlier, segmentasi).
+- Berikan rekomendasi actionable untuk perbaikan data, feature engineering, proses ETL, dan kebutuhan bisnis.
+- Output HARUS berupa satu objek JSON terstruktur dengan fields:
+    - data_overview
+    - statistical_summary
+    - quality_checks
+    - business_insights
+    - evaluation_and_recommendations
+    - action_plan
+
+SEMUA penjelasan, insight, dan rekomendasi WAJIB menggunakan Bahasa Indonesia yang jelas, profesional, dan mudah dipahami user bisnis.
+"""
+    return prompt
+
+def rule_based_insight(df):
+    """
+    Insight sederhana berbasis rule (opsional, sebagai fallback jika LLM gagal).
+    """
+    insights = []
+    if df.isnull().sum().any():
+        insights.append("Terdapat nilai kosong (missing value) pada beberapa kolom, lakukan imputasi atau hapus baris terkait.")
+    for col in df.columns:
+        if df[col].nunique() > 0.9 * len(df):
+            insights.append(f"Kolom '{col}' memiliki kardinalitas tinggi (high cardinality), sebaiknya tidak digunakan sebagai fitur prediktor.")
+    return insights
+
+def generate_advanced_review(df, profiling_json, ge_summary, gemini_api_key=None):
+    """
+    Menghasilkan advanced review JSON dengan insight otomatis dari LLM Gemini.
+    Jika output LLM tidak valid JSON, fallback ke insight sederhana rule-based.
+    Parameter gemini_api_key dapat diteruskan langsung; jika None, fallback ke environment.
+    """
+    # Gunakan parameter gemini_api_key jika diberikan, jika tidak fallback ke environment variable
+    if not gemini_api_key:
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+    
+    if not gemini_api_key:
+        return {
+            "error": "GEMINI_API_KEY tidak ditemukan di parameter atau file .env",
+            "rule_based_insight": rule_based_insight(df)
+        }
+
+    try:
+        configure_gemini(gemini_api_key)
+        prompt = generate_prompt(df, profiling_json, ge_summary)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(prompt)
+        
+        try:
+            insight_json = json.loads(response.text)
+        except json.JSONDecodeError:
+            # Fallback jika LLM menghasilkan JSON tidak valid
+            insight_json = {
+                "error": "Output LLM tidak valid JSON.",
+                "raw": response.text,
+                "rule_based_insight": rule_based_insight(df)
+            }
+        return insight_json
+
+    except Exception as e:
+        # Fallback untuk error lainnya
+        return {
+            "error": f"Terjadi kesalahan: {str(e)}",
+            "rule_based_insight": rule_based_insight(df)
+        }
+
+7. pdf_report_generator.py:
+
+import matplotlib.pyplot as plt
+from jinja2 import Environment, FileSystemLoader
+import pdfkit
+import os
+
+def generate_plots(df, out_dir):
+    """
+    Membuat visualisasi otomatis dari DataFrame dan menyimpan file gambar ke direktori output.
+    Semua label dan judul grafik menggunakan Bahasa Indonesia.
+    """
+    plot_paths = {}
+    # Contoh: distribusi total sales
+    if 'totalsales' in df.columns:
+        plt.figure(figsize=(8,5))
+        df['totalsales'].plot(kind='hist', bins=20, color='#2196f3', edgecolor='black')
+        plt.title('Distribusi Total Penjualan')
+        plt.xlabel('Total Penjualan')
+        plt.ylabel('Frekuensi')
+        plot_sales = os.path.join(out_dir, 'sales_hist.png')
+        plt.savefig(plot_sales, bbox_inches='tight')
+        plt.close()
+        plot_paths['sales_hist'] = plot_sales
+    # Tambah visualisasi lain sesuai kebutuhan (misal: distribusi qty, pie chart kategori, dsb)
+    return plot_paths
+
+def generate_pdf_report(df, advanced_review, pdf_path):
+    """
+    Menghasilkan laporan PDF dari insight lanjutan dan visualisasi.
+    Semua label, judul, dan isi laporan menggunakan Bahasa Indonesia.
+    """
+    out_dir = os.path.dirname(pdf_path)
+    plot_paths = generate_plots(df, out_dir)
+    # Siapkan environment Jinja2 dan render template HTML
+    env = Environment(loader=FileSystemLoader('templates'))
+    template = env.get_template('eda_pdf_template.html')
+    html_out = template.render(
+        review=advanced_review,
+        plot_sales=plot_paths.get('sales_hist', None)
+        # Tambah plot lain jika ada
+    )
+    # Convert HTML ke PDF
+    pdfkit.from_string(html_out, pdf_path)
+
+8. my_ge_agentic_utils.py:
+
+import pandas as pd
+import numpy as np
+import datetime
+import json
+import warnings
+
+def log_agentic_reasoning(reasoning, log_path="agentic_reasoning_log.json"):
+    try:
+        event = reasoning.copy()
+        event["timestamp"] = datetime.datetime.utcnow().isoformat()
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # Logging should never block EDA pipeline
+
+def safe(val, default=None):
+    try:
+        if isinstance(val, float) and (np.isnan(val) or np.isinf(val)):
+            return default
+        if pd.isnull(val):
+            return default
+        return val
+    except Exception:
+        return default
+
+def get_reference_histogram(ser, bins=10):
+    counts, bin_edges = np.histogram(ser.dropna(), bins=bins)
+    weights = counts / counts.sum() if counts.sum() else np.zeros_like(counts, dtype=float)
+    return {"bins": bin_edges.tolist(), "weights": weights.tolist()}
+
+def auto_detect_datetime_col(df):
+    dt_cols = []
+    for col in df.columns:
+        ser = df[col]
+        if pd.api.types.is_datetime64_any_dtype(ser):
+            dt_cols.append(col)
+        elif ser.dtype == "object":
+            try:
+                pd.to_datetime(ser.dropna().sample(min(10, len(ser.dropna()))))
+                dt_cols.append(col)
+            except Exception:
+                continue
+    return dt_cols
+
+def get_reference_set(ref_df, col):
+    try:
+        if col in ref_df.columns:
+            return set(ref_df[col].dropna().unique())
+        return None
+    except Exception:
+        return None
+
+def explain_expectation(col, expectation, params, evidence=None):
+    reason = f"Expectation '{expectation}' applied on '{col}' with params {params}."
+    if evidence:
+        reason += f" Evidence: {evidence}"
+    return reason
+
+def apply_dynamic_expectations(validator, sampled: pd.DataFrame, reference_data: dict = None, time_series_check=True):
+    """
+    Apply super-advance, agentic, robust, multi-functional, and reasoning-rich GE expectations to a DataFrame.
+    Parameters:
+        validator: GE validator object (already loaded with sampled df)
+        sampled: pd.DataFrame (sampled data)
+        reference_data: dict, optional (for cross-table/column checks or reference histograms)
+        time_series_check: bool, auto-detect and apply special handling if time-series column found
+    Returns:
+        validator (with all expectations applied)
+    """
+    reasoning_log = []
+    try:
+        # Table-level expectations (volume, basic completeness)
+        validator.expect_table_row_count_to_be_between(
+            min_value=10, max_value=int(1.2 * len(sampled))
+        )
+        validator.expect_table_column_count_to_equal(len(sampled.columns))
+        reasoning_log.append({
+            "scope": "table",
+            "expectation": "row/col count",
+            "params": {"min_rows": 10, "max_rows": int(1.2 * len(sampled)), "n_cols": len(sampled.columns)},
+            "reason": "Basic table volume and structure check"
+        })
+
+        # Detect time-series columns
+        dt_cols = auto_detect_datetime_col(sampled)
+        ref_sets = reference_data.get("foreign_keys", {}) if reference_data else {}
+
+        for col in sampled.columns:
+            ser = sampled[col]
+            col_type = str(ser.dtype)
+            null_rate = ser.isnull().mean()
+            nunique = ser.nunique(dropna=True)
+            params = {}
+
+            # Completeness
+            if null_rate < 0.05:
+                validator.expect_column_values_to_not_be_null(col)
+                reasoning_log.append({
+                    "col": col, "expectation": "expect_column_values_to_not_be_null",
+                    "params": {}, "reason": explain_expectation(col, "not null", {}, f"null_rate={null_rate:.2%}")
+                })
+            else:
+                validator.expect_column_values_to_not_be_null(col, mostly=1-null_rate)
+                reasoning_log.append({
+                    "col": col, "expectation": "expect_column_values_to_not_be_null (mostly)",
+                    "params": {"mostly": 1-null_rate}, "reason": explain_expectation(col, "not null mostly", {"mostly": 1-null_rate}, f"null_rate={null_rate:.2%}")
+                })
+
+            # Uniqueness
+            if nunique == len(ser):
+                validator.expect_column_values_to_be_unique(col)
+                reasoning_log.append({
+                    "col": col, "expectation": "expect_column_values_to_be_unique",
+                    "params": {}, "reason": explain_expectation(col, "unique", {}, "All values unique")
+                })
+            # Foreign key (cross-table)
+            if col in ref_sets:
+                validator.expect_column_values_to_be_in_set(col, ref_sets[col])
+                reasoning_log.append({
+                    "col": col, "expectation": "expect_column_values_to_be_in_set",
+                    "params": {"set_size": len(ref_sets[col])}, "reason": explain_expectation(col, "fk in set", {"set_size": len(ref_sets[col])})
+                })
+
+            # Schema/type/length
+            if pd.api.types.is_numeric_dtype(ser):
+                minval, maxval = float(safe(ser.min(), 0)), float(safe(ser.max(), 1))
+                validator.expect_column_values_to_be_between(col, min_value=minval, max_value=maxval)
+                validator.expect_column_min_to_be_between(col, min_value=minval, max_value=maxval)
+                validator.expect_column_max_to_be_between(col, min_value=minval, max_value=maxval)
+                reasoning_log.append({
+                    "col": col, "expectation": "numeric range",
+                    "params": {"min": minval, "max": maxval}, "reason": explain_expectation(col, "between", {"min": minval, "max": maxval})
+                })
+                # Distribution / Outlier
+                try:
+                    hist = get_reference_histogram(ser)
+                    validator.expect_column_kl_divergence_to_be_less_than(col, partition_object=hist, threshold=0.2)
+                    reasoning_log.append({
+                        "col": col, "expectation": "expect_column_kl_divergence_to_be_less_than",
+                        "params": {"partition_object": "auto-histogram", "threshold": 0.2},
+                        "reason": explain_expectation(col, "kl divergence", {"threshold": 0.2})
+                    })
+                except Exception as e:
+                    warnings.warn(f"KL divergence failed for {col}: {e}")
+
+                # Advance stats (mean, std, median)
+                mean, std, median = float(safe(ser.mean())), float(safe(ser.std())), float(safe(ser.median()))
+                validator.expect_column_mean_to_be_between(col, min_value=mean-std, max_value=mean+std)
+                validator.expect_column_median_to_be_between(col, min_value=median-std, max_value=median+std)
+                validator.expect_column_stdev_to_be_between(col, min_value=0, max_value=std*2)
+                reasoning_log.append({
+                    "col": col, "expectation": "mean/median/stdev range",
+                    "params": {"mean": mean, "std": std, "median": median}, "reason": explain_expectation(col, "mean/median/stdev", {"mean": mean, "std": std, "median": median})
+                })
+
+            elif pd.api.types.is_string_dtype(ser):
+                maxlen = int(ser.dropna().astype(str).str.len().max()) if not ser.dropna().empty else 30
+                validator.expect_column_value_lengths_to_be_between(col, min_value=1, max_value=maxlen)
+                reasoning_log.append({
+                    "col": col, "expectation": "expect_column_value_lengths_to_be_between",
+                    "params": {"min": 1, "max": maxlen}, "reason": explain_expectation(col, "length between", {"min": 1, "max": maxlen})
+                })
+                # Regex detection
+                if "email" in col.lower():
+                    validator.expect_column_values_to_match_regex(col, r"^[\w\.-]+@[\w\.-]+\.\w+$")
+                    reasoning_log.append({
+                        "col": col, "expectation": "expect_column_values_to_match_regex",
+                        "params": {"regex": "email"}, "reason": explain_expectation(col, "regex email", {"regex": "email"})
+                    })
+                if "phone" in col.lower():
+                    validator.expect_column_values_to_match_regex(col, r"^\+?\d{8,15}$")
+                    reasoning_log.append({
+                        "col": col, "expectation": "expect_column_values_to_match_regex",
+                        "params": {"regex": "phone"}, "reason": explain_expectation(col, "regex phone", {"regex": "phone"})
+                    })
+                if "status" in col.lower():
+                    status_set = ["PAID", "UNPAID", "CANCELLED", "SUCCESS", "FAILED"]
+                    validator.expect_column_values_to_be_in_set(col, status_set)
+                    reasoning_log.append({
+                        "col": col, "expectation": "expect_column_values_to_be_in_set",
+                        "params": {"set": status_set}, "reason": explain_expectation(col, "status set", {"set": status_set})
+                    })
+
+            # Time-series
+            if time_series_check and col in dt_cols:
+                validator.expect_column_values_to_be_increasing(col)
+                reasoning_log.append({
+                    "col": col, "expectation": "expect_column_values_to_be_increasing",
+                    "params": {}, "reason": explain_expectation(col, "increasing", {}, "Time series monotonicity")
+                })
+                try:
+                    diff = pd.to_datetime(ser.sort_values()).diff().dt.total_seconds().dropna()
+                    max_gap = float(diff.max()) if not diff.empty else 0
+                    if max_gap > 3 * 24 * 3600:
+                        validator.expect_column_values_to_be_between(col, min_value=ser.min(), max_value=ser.max())
+                        reasoning_log.append({
+                            "col": col, "expectation": "expect_column_values_to_be_between (time gap)",
+                            "params": {"min": str(ser.min()), "max": str(ser.max())},
+                            "reason": explain_expectation(col, "time gap", {"min": str(ser.min()), "max": str(ser.max())}, f"max_gap={max_gap}")
+                        })
+                except Exception:
+                    pass
+
+        # Cross-column (example: totalsales > qty, if both present)
+        if set(["totalsales", "qty"]).issubset(sampled.columns):
+            validator.expect_column_pair_values_A_to_be_greater_than_B("totalsales", "qty")
+            reasoning_log.append({
+                "cols": ["totalsales", "qty"],
+                "expectation": "expect_column_pair_values_A_to_be_greater_than_B",
+                "params": {}, "reason": explain_expectation("totalsales, qty", "A>B", {}, "Business logic totalsales > qty")
+            })
+
+        # Cross-table (foreign key, if reference_data given)
+        if reference_data and "foreign_keys" in reference_data:
+            for col, ref_set in reference_data["foreign_keys"].items():
+                if col in sampled.columns:
+                    validator.expect_column_values_to_be_in_set(col, ref_set)
+                    reasoning_log.append({
+                        "col": col, "expectation": "expect_column_values_to_be_in_set (FK)",
+                        "params": {"fk_size": len(ref_set)},
+                        "reason": explain_expectation(col, "fk in set", {"fk_size": len(ref_set)})
+                    })
+
+    except Exception as e:
+        warnings.warn(f"Agentic GE expectation failed: {e}")
+        reasoning_log.append({"error": str(e)})
+
+    log_agentic_reasoning({"reasoning": reasoning_log})
+
+    return validator
+
+9. data_drift.py:
+
+import os
+import json
+import numpy as np
+
+BASELINE_PATH = os.path.join(os.path.dirname(__file__), "baseline_stats.json")
+
+def save_baseline_stats(stats: dict):
+    with open(BASELINE_PATH, "w", encoding="utf-8") as f:
+        json.dump(stats, f, indent=2, ensure_ascii=False)
+
+def load_baseline_stats():
+    if not os.path.exists(BASELINE_PATH):
+        return None
+    with open(BASELINE_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def compute_stats(df):
+    stats = {}
+    for col in df.columns:
+        if np.issubdtype(df[col].dtype, np.number):
+            stats[col] = {
+                "mean": float(df[col].mean()),
+                "std": float(df[col].std()),
+                "min": float(df[col].min()),
+                "max": float(df[col].max()),
+                "outlier_rate": float(((np.abs(df[col] - df[col].mean()) > 3 * df[col].std()).sum()) / len(df))
+            }
+    return stats
+
+def detect_drift(current_stats, baseline_stats, threshold=0.15):
+    alerts = []
+    for col in current_stats:
+        if col in baseline_stats:
+            for k in ["mean", "std", "outlier_rate"]:
+                base = baseline_stats[col][k]
+                curr = current_stats[col][k]
+                if base == 0:
+                    continue
+                delta = abs(curr - base) / abs(base)
+                if delta > threshold:
+                    alerts.append(f"Drift pada kolom '{col}' ({k}): baseline={base:.3f}, sekarang={curr:.3f}, delta={delta:.2%}")
+    return alerts
+
+# Example usage in EDA pipeline:
+# current_stats = compute_stats(df)
+# baseline = load_baseline_stats()
+# if baseline: drift_alerts = detect_drift(current_stats, baseline)
+# else: save_baseline_stats(current_stats)
+
+10. ge_suite_tools.py:
+
+import json
+import os
+
+def suggest_schema_to_ge_suite(suggest_schema: dict, name="auto_suite"):
+    suite = {
+        "expectation_suite_name": name,
+        "expectations": [],
+        "meta": {}
+    }
+    for col, spec in suggest_schema.items():
+        typ = spec.get("type")
+        if typ and typ.startswith("float") or typ.startswith("int"):
+            suite["expectations"].append({
+                "expectation_type": "expect_column_values_to_be_between",
+                "kwargs": {"column": col, "min_value": spec.get("min"), "max_value": spec.get("max")}
+            })
+        elif "max_length" in spec:
+            suite["expectations"].append({
+                "expectation_type": "expect_column_value_lengths_to_be_between",
+                "kwargs": {"column": col, "min_value": 1, "max_value": spec["max_length"]}
+            })
+        # Add more rules as needed
+    return suite
+
+def save_ge_suite(suite: dict, out_path: str):
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(suite, f, indent=2, ensure_ascii=False)
+
+def load_ge_suite(path: str):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+11. feature_interaction.py:
+
+import pandas as pd
+import numpy as np
+
+def correlation_report(df: pd.DataFrame, threshold=0.7):
+    corr = df.select_dtypes(include=[np.number]).corr(method="pearson").abs()
+    pairs = []
+    for col1 in corr.columns:
+        for col2 in corr.columns:
+            if col1 >= col2:
+                continue
+            val = corr.loc[col1, col2]
+            if val > threshold:
+                pairs.append({"pair": (col1, col2), "corr": float(val)})
+    return pairs
+
+def vif_report(df: pd.DataFrame, thresh=5.0):
+    from statsmodels.stats.outliers_influence import variance_inflation_factor
+    X = df.select_dtypes(include=[np.number]).dropna()
+    vifs = []
+    if X.shape[1] > 1:
+        for i, col in enumerate(X.columns):
+            vif = variance_inflation_factor(X.values, i)
+            if vif > thresh:
+                vifs.append({"column": col, "vif": float(vif)})
+    return vifs
+
+def analyze_feature_interaction(df: pd.DataFrame):
+    return {
+        "high_correlation": correlation_report(df),
+        "high_vif": vif_report(df)
+    }
+
+12. timeseries_profile.py:
+
+import pandas as pd
+import numpy as np
+
+def find_timeseries_columns(df: pd.DataFrame):
+    dt_cols = [col for col in df.columns if np.issubdtype(df[col].dtype, np.datetime64)]
+    return dt_cols
+
+def seasonal_decompose_report(df: pd.DataFrame, col: str, period: int = 12):
+    from statsmodels.tsa.seasonal import seasonal_decompose
+    results = {}
+    ser = df[col].dropna().sort_index()
+    if len(ser) < period * 2:
+        return {"error": "Terlalu sedikit data untuk dekomposisi musiman"}
+    try:
+        result = seasonal_decompose(ser, period=period, model='additive')
+        results["trend"] = result.trend.describe().to_dict() if hasattr(result.trend, "describe") else {}
+        results["seasonal_strength"] = float(np.std(result.seasonal)) / np.std(ser)
+        results["resid_std"] = float(np.std(result.resid))
+    except Exception as e:
+        results["error"] = str(e)
+    return results
+
+def autocorrelation_report(df: pd.DataFrame, col: str, lags=20):
+    from statsmodels.tsa.stattools import acf
+    ser = df[col].dropna()
+    if len(ser) < lags+1:
+        return {"error": "Data terlalu pendek untuk ACF"}
+    acfs = acf(ser, nlags=lags)
+    return {"acf": acfs.tolist()}
+
+def gap_analysis(df: pd.DataFrame, dt_col: str):
+    ser = pd.to_datetime(df[dt_col]).dropna().sort_values()
+    gaps = ser.diff().dt.total_seconds().dropna()
+    large_gaps = gaps[gaps > gaps.median() * 2]
+    return {
+        "gap_median_sec": float(gaps.median()),
+        "num_large_gaps": int((gaps > gaps.median() * 2).sum()),
+        "large_gaps": large_gaps.tolist()[:10]
+    }
+
+def analyze_timeseries(df: pd.DataFrame):
+    dt_cols = find_timeseries_columns(df)
+    reports = {}
+    for col in dt_cols:
+        reports[col] = {
+            "gap_analysis": gap_analysis(df, col),
+            "autocorrelation": autocorrelation_report(df, col),
+            "seasonal_decompose": seasonal_decompose_report(df, col)
+        }
+    return reports
